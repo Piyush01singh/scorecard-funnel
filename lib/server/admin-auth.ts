@@ -3,7 +3,7 @@
  * Used by the standalone admin.html to call the API from a different origin.
  */
 
-import { timingSafeEqual } from "node:crypto"
+import { timingSafeEqual, createHmac, createHash } from "node:crypto"
 
 const isProd = process.env.NODE_ENV === "production"
 
@@ -42,18 +42,24 @@ export function corsHeaders(request: Request): HeadersInit {
     }
   }
 
-  return {
+  const headers: Record<string, string> = {
     "Access-Control-Allow-Origin": allowOrigin,
     "Vary": "Origin",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Password",
     "Access-Control-Max-Age": "86400",
   }
+
+  if (allowOrigin && allowOrigin !== "*") {
+    headers["Access-Control-Allow-Credentials"] = "true"
+  }
+
+  return headers
 }
 
 /** Constant-time compare of a provided secret against an expected env value.
  *  Returns false when the expected value is unset (fail closed). */
-function timingSafeMatch(provided: string, expected: string | undefined): boolean {
+export function timingSafeMatch(provided: string, expected: string | undefined): boolean {
   const exp = expected?.trim()
   if (!exp || !provided) return false
 
@@ -76,13 +82,150 @@ function timingSafeMatch(provided: string, expected: string | undefined): boolea
   }
 }
 
+export const ADMIN_SESSION_COOKIE = "admin_session"
+
+export type AdminRole = "admin" | "tech"
+
+export interface AdminSessionPayload {
+  role: AdminRole
+  iat: number
+  exp: number
+}
+
+/** Extracts a cookie value by name from the Cookie header string. */
+export function parseCookie(cookieHeader: string | null | undefined, name: string): string | null {
+  if (!cookieHeader) return null
+  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`))
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return match[1]
+  }
+}
+
+/** Derives a stable HMAC signing key for sessions. */
+function getSessionSigningKey(): Buffer | null {
+  const customSecret = process.env.ADMIN_SESSION_SECRET?.trim()
+  if (customSecret) {
+    return Buffer.from(customSecret, "utf8")
+  }
+  const adminPw = process.env.ADMIN_API_PASSWORD?.trim() ?? ""
+  const techPw = process.env.TECHADMIN_API_PASSWORD?.trim() ?? ""
+  if (!adminPw && !techPw) {
+    return null
+  }
+  return createHash("sha256").update(`admin-session-v1:${adminPw}:${techPw}`).digest()
+}
+
+/** Creates a signed, tamper-proof session token. */
+export function createAdminSessionToken(
+  role: AdminRole,
+  expiresInSeconds = 60 * 60 * 24 * 7 // 7 days
+): string | null {
+  const key = getSessionSigningKey()
+  if (!key) return null
+
+  const now = Math.floor(Date.now() / 1000)
+  const payload: AdminSessionPayload = {
+    role,
+    iat: now,
+    exp: now + expiresInSeconds,
+  }
+
+  const data = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")
+  const signature = createHmac("sha256", key).update(data).digest("base64url")
+  return `${data}.${signature}`
+}
+
+/** Verifies a signed session token. */
+export function verifyAdminSessionToken(
+  token: string | null | undefined
+): { ok: boolean; role?: AdminRole } {
+  if (!token || typeof token !== "string") return { ok: false }
+  const parts = token.split(".")
+  if (parts.length !== 2) return { ok: false }
+  const [data, signature] = parts
+  if (!data || !signature) return { ok: false }
+
+  const key = getSessionSigningKey()
+  if (!key) return { ok: false }
+
+  const expectedSignature = createHmac("sha256", key).update(data).digest("base64url")
+  const sigBuf = Buffer.from(signature, "utf8")
+  const expBuf = Buffer.from(expectedSignature, "utf8")
+
+  if (sigBuf.length !== expBuf.length) {
+    try {
+      timingSafeEqual(expBuf, expBuf)
+    } catch {
+      /* noop */
+    }
+    return { ok: false }
+  }
+  if (!timingSafeEqual(sigBuf, expBuf)) {
+    return { ok: false }
+  }
+
+  try {
+    const raw = Buffer.from(data, "base64url").toString("utf8")
+    const payload = JSON.parse(raw) as Partial<AdminSessionPayload>
+    const now = Math.floor(Date.now() / 1000)
+
+    if (typeof payload.exp !== "number" || payload.exp < now) {
+      return { ok: false }
+    }
+    if (payload.role !== "admin" && payload.role !== "tech") {
+      return { ok: false }
+    }
+
+    return { ok: true, role: payload.role }
+  } catch {
+    return { ok: false }
+  }
+}
+
+/** Builds the Set-Cookie header string for an admin session. */
+export function buildAdminSessionCookie(
+  token: string,
+  maxAgeSeconds = 60 * 60 * 24 * 7
+): string {
+  const secure = isProd ? "; Secure" : ""
+  return `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure}`
+}
+
+/** Builds the Set-Cookie header string to clear the admin session cookie. */
+export function buildAdminLogoutCookie(): string {
+  const secure = isProd ? "; Secure" : ""
+  return `${ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secure}`
+}
+
 /**
- * Admin access. Accepts EITHER the standard admin password OR the tech-admin
- * password — tech is an elevated, superset role, so the tech credential can
+ * Extracts and verifies the admin session from request cookies.
+ */
+export function getAdminSession(request: Request): { role: AdminRole } | null {
+  const cookieHeader = request.headers.get("cookie")
+  const token = parseCookie(cookieHeader, ADMIN_SESSION_COOKIE)
+  if (!token) return null
+  const res = verifyAdminSessionToken(token)
+  if (!res.ok || !res.role) return null
+  return { role: res.role }
+}
+
+/**
+ * Admin access. Accepts EITHER a valid admin session cookie OR (for backward
+ * compatibility) the standard admin password / tech-admin password in the
+ * X-Admin-Password header.
+ * Tech is an elevated, superset role, so the tech credential or tech session can
  * use every admin route (prompts, responses) the shared console calls. Uses a
  * constant-time comparison to prevent timing attacks.
  */
 export function isAdminAuthorized(request: Request): boolean {
+  const session = getAdminSession(request)
+  if (session && (session.role === "admin" || session.role === "tech")) {
+    return true
+  }
+
   const provided = request.headers.get("x-admin-password")?.trim() ?? ""
   if (!provided) return false
   return (
@@ -92,11 +235,17 @@ export function isAdminAuthorized(request: Request): boolean {
 }
 
 /**
- * Tech-admin access. Accepts ONLY the dedicated TECHADMIN_API_PASSWORD — gates
- * the /techadmin-exclusive surfaces (analytics, telemetry). The regular admin
- * password does NOT pass here, which is what keeps the two consoles separate.
+ * Tech-admin access. Accepts ONLY a valid tech session cookie OR (for backward
+ * compatibility) the dedicated TECHADMIN_API_PASSWORD in the X-Admin-Password
+ * header. Gates the /techadmin-exclusive surfaces (analytics, telemetry).
+ * The regular admin password does NOT pass here, which is what keeps the two consoles separate.
  */
 export function isTechAuthorized(request: Request): boolean {
+  const session = getAdminSession(request)
+  if (session && session.role === "tech") {
+    return true
+  }
+
   const provided = request.headers.get("x-admin-password")?.trim() ?? ""
   if (!provided) return false
   return timingSafeMatch(provided, process.env.TECHADMIN_API_PASSWORD)

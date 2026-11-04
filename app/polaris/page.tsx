@@ -37,6 +37,7 @@ import {
   Loader2,
   Trash2,
   MessageCircle,
+  LogOut,
 } from "lucide-react"
 import {
   ReportView,
@@ -424,10 +425,7 @@ function AnalyticsPanel() {
     setLoading(true)
     setError("")
     try {
-      const headers: Record<string, string> = {}
-      const pw = sessionStorage.getItem("admin-api-password")
-      if (pw) headers["X-Admin-Password"] = pw
-      const res = await fetch("/api/admin/stats", { headers })
+      const res = await fetch("/api/admin/stats")
       if (res.status === 401) throw new Error("Unauthorized")
       if (!res.ok) throw new Error("HTTP " + res.status)
       const json = await res.json()
@@ -992,10 +990,12 @@ export default function AdminPage() {
     setLoading(true)
     setLoadError("")
     try {
-      const pw = sessionStorage.getItem("admin-api-password") ?? ""
-      const res = await fetch("/api/admin/prompts", {
-        headers: pw ? { "X-Admin-Password": pw } : {},
-      })
+      const res = await fetch("/api/admin/prompts")
+      if (res.status === 401) {
+        setAuthed(false)
+        setLoadError("Session expired. Please log in again.")
+        return
+      }
       if (!res.ok) throw new Error("HTTP " + res.status)
       const json = await res.json()
       if (json.ok && json.data) {
@@ -1014,10 +1014,11 @@ export default function AdminPage() {
     setResponsesError("")
     try {
       const params = new URLSearchParams({ pageSize: "25", offset: String(offset) })
-      const headers: Record<string, string> = {}
-      const stored = sessionStorage.getItem("admin-api-password")
-      if (stored) headers["X-Admin-Password"] = stored
-      const res = await fetch(`/api/admin/responses?${params}`, { headers })
+      const res = await fetch(`/api/admin/responses?${params}`)
+      if (res.status === 401) {
+        setAuthed(false)
+        throw new Error("Session expired. Please log in again.")
+      }
       if (res.status === 401) throw new Error("Unauthorized")
       if (!res.ok) throw new Error("HTTP " + res.status)
       const json = await res.json()
@@ -1046,10 +1047,11 @@ export default function AdminPage() {
       if (searchDateTo) params.set("dateTo", searchDateTo)
       if (searchCompleted !== "all") params.set("completed", searchCompleted)
       if (searchPurchased !== "all") params.set("purchased", searchPurchased)
-      const headers: Record<string, string> = {}
-      const stored = sessionStorage.getItem("admin-api-password")
-      if (stored) headers["X-Admin-Password"] = stored
-      const res = await fetch(`/api/admin/responses/search?${params}`, { headers })
+      const res = await fetch(`/api/admin/responses/search?${params}`)
+      if (res.status === 401) {
+        setAuthed(false)
+        throw new Error("Session expired. Please log in again.")
+      }
       if (res.status === 401) throw new Error("Unauthorized")
       if (!res.ok) throw new Error("HTTP " + res.status)
       const json = await res.json()
@@ -1176,14 +1178,16 @@ export default function AdminPage() {
     const ids = rows.map((r) => r.id)
     setDeletingIds((prev) => new Set([...prev, ...ids]))
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" }
-      const stored = sessionStorage.getItem("admin-api-password")
-      if (stored) headers["X-Admin-Password"] = stored
       const res = await fetch("/api/admin/responses", {
         method: "DELETE",
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids }),
       })
+      if (res.status === 401) {
+        setAuthed(false)
+        alert("Session expired. Please log in again.")
+        return
+      }
       const json = await res.json().catch(() => null)
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || `HTTP ${res.status}`)
@@ -1218,19 +1222,34 @@ export default function AdminPage() {
     void deleteResponses(displayed.filter((r) => selectedIds.has(r.id)))
   }
 
-  const validatePassword = useCallback(
-    async (pw: string): Promise<boolean> => {
+  const [loggingIn, setLoggingIn] = useState(false)
+
+  const checkSession = useCallback(async (): Promise<boolean> => {
+    try {
+      const scope = isTech ? "tech" : "admin"
+      const res = await fetch(`/api/admin/auth-check?scope=${scope}`)
+      return res.ok
+    } catch {
+      return false
+    }
+  }, [isTech])
+
+  const login = useCallback(
+    async (pw: string): Promise<{ ok: boolean; error?: string }> => {
       try {
-        // On /techadmin require the tech password (scope=tech); on /polaris the
-        // standard one. This is what keeps the two consoles' logins distinct -
-        // the regular admin password can't unlock /techadmin.
         const scope = isTech ? "tech" : "admin"
-        const res = await fetch(`/api/admin/auth-check?scope=${scope}`, {
-          headers: { "X-Admin-Password": pw },
+        const res = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: pw, scope }),
         })
-        return res.ok
-      } catch {
-        return false
+        const json = await res.json().catch(() => null)
+        if (!res.ok || !json?.ok) {
+          return { ok: false, error: json?.error || "Invalid password." }
+        }
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : "Login failed" }
       }
     },
     [isTech],
@@ -1246,19 +1265,18 @@ export default function AdminPage() {
     if (didAutoLoad.current) return
     didAutoLoad.current = true
     if (typeof window === "undefined") return
-    const stored = sessionStorage.getItem("admin-api-password")
-    if (stored !== null) {
-      setPassword(stored)
-      void validatePassword(stored).then((valid) => {
-        if (valid) {
-          setAuthed(true)
-          void loadPrompts()
-        } else {
-          sessionStorage.removeItem("admin-api-password")
-        }
-      })
+    try {
+      sessionStorage.removeItem("admin-api-password")
+    } catch {
+      /* ignore */
     }
-  }, [loadPrompts, validatePassword])
+    void checkSession().then((valid) => {
+      if (valid) {
+        setAuthed(true)
+        void loadPrompts()
+      }
+    })
+  }, [checkSession, loadPrompts])
 
   useEffect(() => {
     if (tab === "responses" && authed && !didLoadResponses.current) {
@@ -1270,14 +1288,34 @@ export default function AdminPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setAuthError("")
-    const valid = await validatePassword(password)
-    if (!valid) {
-      setAuthError("Invalid password.")
-      return
+    setLoggingIn(true)
+    try {
+      const res = await login(password)
+      if (!res.ok) {
+        setAuthError(res.error || "Invalid password.")
+        return
+      }
+      setPassword("")
+      setAuthed(true)
+      void loadPrompts()
+    } finally {
+      setLoggingIn(false)
     }
-    sessionStorage.setItem("admin-api-password", password)
-    setAuthed(true)
-    void loadPrompts()
+  }
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/admin/logout", { method: "POST" })
+    } catch {
+      /* ignore */
+    }
+    setAuthed(false)
+    setPassword("")
+    try {
+      sessionStorage.removeItem("admin-api-password")
+    } catch {
+      /* ignore */
+    }
   }
 
   /**
@@ -1311,15 +1349,14 @@ export default function AdminPage() {
       })
     }
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" }
-      if (password) headers["X-Admin-Password"] = password
       const res = await fetch("/api/admin/prompts", {
         method: "POST",
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: payload }),
       })
       if (res.status === 401) {
-        alert("Unauthorized - check your admin password.")
+        setAuthed(false)
+        alert("Session expired. Please log in again.")
         setSaveLabel("Save Changes")
         return
       }
@@ -1673,8 +1710,12 @@ export default function AdminPage() {
             </p>
           )}
 
-          <button type="submit" className="s-btn group h-11 w-full justify-center">
-            Connect
+          <button
+            type="submit"
+            disabled={loggingIn}
+            className="s-btn group h-11 w-full justify-center disabled:opacity-50"
+          >
+            {loggingIn ? "Connecting..." : "Connect"}
           </button>
         </form>
       </div>
@@ -1745,6 +1786,16 @@ export default function AdminPage() {
             >
               <Save className="h-3 w-3" strokeWidth={1.6} />
               {saveLabel}
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Sign out of the admin console"
+              aria-label="Sign out"
+              className="inline-flex h-9 items-center gap-1.5 rounded-full border border-foreground/35 px-3 text-[10px] uppercase tracking-[0.22em] text-foreground transition-colors duration-300 hover:border-ink hover:text-ink sm:px-4"
+            >
+              <LogOut className="h-3 w-3" strokeWidth={1.6} />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </div>
