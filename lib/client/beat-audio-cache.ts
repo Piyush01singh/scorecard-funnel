@@ -1,3 +1,4 @@
+import { MAX_TTS_CHARS } from "@/lib/tts-limits"
 /**
  * Persistent cache for per-beat (1-5) TTS audio.
  *
@@ -130,7 +131,8 @@ async function idbClear(): Promise<void> {
 }
 
 async function fetchTts(text: string): Promise<ArrayBuffer | null> {
-  if (!text.trim()) return null
+  const cleanText = text.trim().slice(0, MAX_TTS_CHARS)
+  if (!cleanText) return null
   try {
     const res = await fetch("/api/tts", {
       method: "POST",
@@ -138,7 +140,7 @@ async function fetchTts(text: string): Promise<ArrayBuffer | null> {
       // Beats 1-5 use the xAI Grok voice — distinct from the summary's
       // ElevenLabs voice on purpose, so the closing summary feels like a
       // different voice "wrapping up" the five reflections.
-      body: JSON.stringify({ beatContent: text, provider: "xai" }),
+      body: JSON.stringify({ beatContent: cleanText, provider: "xai" }),
     })
     if (!res.ok) return null
     const buf = await res.arrayBuffer()

@@ -1,3 +1,4 @@
+import { MAX_TTS_CHARS } from "@/lib/tts-limits"
 /**
  * Persistent cache for the journey-summary TTS audio.
  *
@@ -142,14 +143,15 @@ async function idbClear(): Promise<void> {
 }
 
 async function fetchTts(text: string): Promise<ArrayBuffer | null> {
-  if (!text.trim()) return null
+  const cleanText = text.trim().slice(0, MAX_TTS_CHARS)
+  if (!cleanText) return null
   try {
     const res = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // The final summary uses ElevenLabs explicitly — beat reveals use xAI
       // (see lib/client/beat-audio-cache.ts) so the two voices are distinct.
-      body: JSON.stringify({ beatContent: text, provider: "elevenlabs" }),
+      body: JSON.stringify({ beatContent: cleanText, provider: "elevenlabs" }),
     })
     if (!res.ok) return null
     const buf = await res.arrayBuffer()

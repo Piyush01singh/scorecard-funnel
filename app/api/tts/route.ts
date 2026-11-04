@@ -1,5 +1,6 @@
 import { ElevenLabsClient } from "elevenlabs";
 import { NextRequest, NextResponse } from "next/server";
+import { MAX_TTS_CHARS } from "@/lib/tts-limits";
 
 type Provider = "xai" | "elevenlabs";
 
@@ -11,27 +12,85 @@ const DEFAULT_PROVIDER: Provider =
     ? "elevenlabs"
     : "xai";
 
+// Abuse protection: in-memory per-IP sliding window rate limiter
+// protects paid endpoints against automated floods when Redis is unavailable.
+const ttsRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+const TTS_RATE_LIMIT_WINDOW_MS = 60_000;
+const TTS_RATE_LIMIT_MAX_REQUESTS = 30;
+
+function isTtsRateLimited(ip: string): boolean {
+  if (ip === "unknown") return false;
+  const now = Date.now();
+  const entry = ttsRateLimitMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    ttsRateLimitMap.set(ip, { count: 1, resetAt: now + TTS_RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  entry.count++;
+  return entry.count > TTS_RATE_LIMIT_MAX_REQUESTS;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json()) as {
-      beatContent?: string;
-      provider?: string;
+    const ip =
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+
+    if (isTtsRateLimited(ip)) {
+      return NextResponse.json(
+        { error: "Too many requests. Please try again later." },
+        { status: 429, headers: { "Retry-After": "60" } }
+      );
+    }
+
+    let body: {
+      beatContent?: unknown;
+      text?: unknown;
+      provider?: unknown;
     };
-    const { beatContent } = body;
+
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON request body" }, { status: 400 });
+    }
+
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Request body must be an object" }, { status: 400 });
+    }
+
+    const rawText =
+      typeof body.beatContent === "string"
+        ? body.beatContent
+        : typeof body.text === "string"
+          ? body.text
+          : undefined;
+
+    if (!rawText || !rawText.trim() || rawText.length > MAX_TTS_CHARS) {
+      return NextResponse.json(
+        { error: `Valid text (max ${MAX_TTS_CHARS} characters) is required` },
+        { status: 400 }
+      );
+    }
+
+    const trimmedText = rawText.trim();
+
+    if (body.provider !== undefined && body.provider !== "elevenlabs" && body.provider !== "xai") {
+      return NextResponse.json(
+        { error: "Invalid provider. Supported providers are 'xai' and 'elevenlabs'" },
+        { status: 400 }
+      );
+    }
+
     const provider: Provider =
       body.provider === "elevenlabs" || body.provider === "xai"
-        ? body.provider
+        ? (body.provider as Provider)
         : DEFAULT_PROVIDER;
 
-    if (!beatContent) {
-      return NextResponse.json({ error: 'Text is required' }, { status: 400 });
-    }
-
     if (provider === "elevenlabs") {
-      return await elevenLabsTts(beatContent);
+      return await elevenLabsTts(trimmedText);
     }
 
-    return await xaiGrokTts(beatContent);
+    return await xaiGrokTts(trimmedText);
 
   } catch (error) {
     console.error('TTS error:', error);
