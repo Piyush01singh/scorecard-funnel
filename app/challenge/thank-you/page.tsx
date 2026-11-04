@@ -12,7 +12,7 @@ import {
   preloadSummaryAudio,
 } from "@/lib/client/summary-audio-cache"
 import { FB_PIXEL_ID, trackWhenReady } from "@/lib/fbpixel"
-import { persistPurchase, persistTelemetry } from "@/lib/persist-outputs"
+import { persistTelemetry } from "@/lib/persist-outputs"
 import { rememberPurchase } from "@/lib/client/purchase-proof"
 import { funnelOriginToReturnTo } from "@/lib/client/funnel-origin"
 
@@ -215,10 +215,10 @@ export default function ThankYouPage() {
     markComplete()
   }, [markComplete])
 
-  // Record the purchase + refresh PostHog telemetry for /techadmin analytics.
+  // Refresh PostHog telemetry for /techadmin analytics.
   // Reached only post-transaction; uses the buyer's serial number from context
-  // (same browser as the funnel). The Stripe webhook also records purchases
-  // authoritatively - both writes are idempotent.
+  // (same browser as the funnel). Purchases are recorded authoritatively via
+  // server-side webhooks (Stripe / Calendly) rather than client-side (fixes #12).
   const recordedRef = useRef(false)
   useEffect(() => {
     if (recordedRef.current) return
@@ -228,13 +228,11 @@ export default function ThankYouPage() {
     const confirmed = params.get("paid") === "1" || params.get("booked") === "1"
     if (!confirmed) return
     recordedRef.current = true
-    const resolved = resolveTier()
     const identity = {
       serialNumber: state.serialNumber,
       firstName: state.firstName,
       email: state.email,
     }
-    persistPurchase(identity, resolved, TIER_VALUE[resolved])
     persistTelemetry(identity)
   }, [state.serialNumber, state.email, state.firstName])
 

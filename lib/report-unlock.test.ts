@@ -133,6 +133,12 @@ test("feedback is clamped server-side, never rejected for length", async () => {
   assert.match(src, /feedback:\s*z\.preprocess\([\s\S]{0,120}\.slice\(0, FEEDBACK_MAX_CHARS\)/)
 })
 
+test("sheets/append rejects unauthenticated purchase action (fixes #12)", async () => {
+  const src = await readFile(new URL("../app/api/sheets/append/route.ts", import.meta.url), "utf8")
+  assert.ok(!/"purchase"/.test(src), "unauthenticated purchase action removed from route")
+  assert.ok(!/recordPurchase/.test(src), "recordPurchase is only called by verified webhooks")
+})
+
 test("a rate-limited write is retried, a malformed one is not", async () => {
   const realFetch = globalThis.fetch
   const payload = {

@@ -126,17 +126,15 @@ export function persistTelemetry(id: Identity): void {
   })
 }
 
-/** Record a completed purchase (tier + dollar amount) for funnel analytics. */
+/**
+ * @deprecated Purchases are recorded authoritatively via server-side webhooks
+ * (Stripe / Calendly) with signature verification to prevent unauthenticated forgery.
+ * Client-side purchase recording to /api/sheets/append is disabled (fixes #12).
+ */
 export function persistPurchase(id: Identity, tier: string, amount?: number): void {
-  if (!id.serialNumber || !id.email || !tier) return
-  void postAppend({
-    action: "purchase",
-    serialNumber: id.serialNumber,
-    firstName: id.firstName,
-    email: id.email,
-    paidTier: tier,
-    paidAmount: typeof amount === "number" ? String(amount) : undefined,
-  })
+  void id
+  void tier
+  void amount
 }
 
 function safeStringify(value: unknown, max: number): string {

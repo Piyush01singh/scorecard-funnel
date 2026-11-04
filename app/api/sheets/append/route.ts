@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
-import { isCosmosConfigured, appendSignupRow, updateQuestionCell, updateFeedbackCell, updateBeatOutputCell, updateUserOutputs, updateUserTelemetry, recordPurchase } from "@/lib/server/cosmos-db"
+import { isCosmosConfigured, appendSignupRow, updateQuestionCell, updateFeedbackCell, updateBeatOutputCell, updateUserOutputs, updateUserTelemetry } from "@/lib/server/cosmos-db"
 import { redactError } from "@/lib/security"
 import { sendLeadEvent } from "@/lib/server/meta-capi"
 import { normalizeVertical } from "@/lib/verticals"
@@ -14,7 +14,7 @@ function readCookie(header: string | null, name: string): string | undefined {
 }
 
 const bodySchema = z.object({
-  action: z.enum(["signup", "answer", "feedback", "beat_output", "score", "report", "summary", "telemetry", "purchase", "offer_view"]),
+  action: z.enum(["signup", "answer", "feedback", "beat_output", "score", "report", "summary", "telemetry", "offer_view"]),
   firstName: z.preprocess(
     (v) => (v == null ? "" : String(v).trim().slice(0, 200)),
     z.string().max(200)
@@ -65,13 +65,9 @@ const bodySchema = z.object({
   scoreJson: z.string().max(20000).optional(),
   reportJson: z.string().max(120000).optional(),
   summaryText: z.string().max(20000).optional(),
-  // Tech-analytics telemetry + purchase recording.
+  // Tech-analytics telemetry.
   phSessionId: z.string().max(200).optional(),
   phDistinctId: z.string().max(200).optional(),
-  paidTier: z
-    .enum(["diagnostic", "session", "transformation", "elevated"])
-    .optional(),
-  paidAmount: z.string().max(20).optional(),
   // First-touch acquisition attribution (signup action only). Capped so a
   // signup can't bloat the document; server re-trims via sanitizeAttribution.
   attribution: z
@@ -117,7 +113,7 @@ export async function POST(request: Request) {
     )
   }
 
-  const { action, firstName, email, phone, leadEventId, audience, serialNumber, questionNumber, answer, questionText, beatNumber, feedback, output, scoreJson, reportJson, summaryText, phSessionId, phDistinctId, paidTier, paidAmount, attribution } = parsed.data
+  const { action, firstName, email, phone, leadEventId, audience, serialNumber, questionNumber, answer, questionText, beatNumber, feedback, output, scoreJson, reportJson, summaryText, phSessionId, phDistinctId, attribution } = parsed.data
 
   try {
     if (action === "signup") {
@@ -222,17 +218,7 @@ export async function POST(request: Request) {
         ph_session_id: phSessionId,
         ph_distinct_id: phDistinctId,
       })
-    } else if (action === "purchase") {
-      if (!serialNumber || !paidTier) {
-        return NextResponse.json(
-          { ok: false, error: "Missing serialNumber or paidTier for purchase action" },
-          { status: 400 }
-        )
-      }
-      await recordPurchase(serialNumber, firstName, email, {
-        paid_tier: paidTier,
-        paid_amount: paidAmount,
-      })
+
     }
   } catch (e) {
     console.error("[sheets/append]", redactError(e))
