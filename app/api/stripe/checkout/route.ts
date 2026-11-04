@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
-import { getStripe } from "@/lib/stripe"
+import { getStripe, getCheckoutRedirectBaseUrl } from "@/lib/stripe"
 
 // Only "diagnostic" hits Stripe here; session/transformation are
 // paid + booked inside Calendly's hosted flow, which uses its own
@@ -82,15 +82,9 @@ export async function POST(req: Request) {
     )
   }
 
-  const forwardedHost = req.headers.get("x-forwarded-host")
-  const forwardedProto = req.headers.get("x-forwarded-proto")
-  const host = forwardedHost ?? req.headers.get("host")
-  const proto =
-    forwardedProto ?? (host?.startsWith("localhost") ? "http" : "https")
-  const siteUrl = host
-    ? `${proto}://${host}`
-    : process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ??
-      new URL(req.url).origin
+  // Anchor redirects strictly to the trusted site origin.
+  // Never trust x-forwarded-host or host headers (CWE-601 open redirect / host injection).
+  const siteUrl = getCheckoutRedirectBaseUrl(req)
 
   // {CHECKOUT_SESSION_ID} is a Stripe-side template token — must
   // arrive unencoded, so we assemble the query string manually
