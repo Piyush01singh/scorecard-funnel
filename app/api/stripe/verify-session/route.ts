@@ -3,7 +3,7 @@ import { z } from "zod"
 import { getStripe } from "@/lib/stripe"
 import { redactError } from "@/lib/security"
 import { isPreviewSecret } from "@/lib/server/admin-auth"
-import { isCosmosConfigured, readUserIdentity } from "@/lib/server/cosmos-db"
+import { isCosmosConfigured, readUserIdentity, readUserPurchaseByEmail } from "@/lib/server/cosmos-db"
 import {
   isDefinitiveStripeMiss,
   isPaidSessionForSerial,
@@ -44,7 +44,8 @@ const SERIAL_SCAN_CAP = 500
  * because OUR side is broken.
  *
  * Note: the $497 / $1,997 / $4,997 tiers are paid inside Calendly's hosted flow and have
- * no Stripe session here — those are handled separately on the report page.
+ * no Stripe session here — their purchases are recorded server-side in Cosmos DB
+ * (via the Calendly webhook / thank-you page) and verified against Cosmos DB below.
  *
  * Preview bypass: a `previewSecret` matching the admin/tech password unlocks
  * (paid:true, tier:"preview") WITHOUT a Stripe call, so we can review the paid
@@ -137,6 +138,13 @@ export async function POST(req: Request) {
     try {
       const row = await readUserIdentity(serialNumber)
       if (serialBelongsTo(row, email)) {
+        if (row.paid_tier) {
+          return NextResponse.json({
+            ok: true,
+            paid: true,
+            tier: row.paid_tier,
+          })
+        }
         // The purchase cannot predate the signup. The hour of slack covers
         // clock skew; the cap bounds the scan on a busy account.
         const signupMs = Date.parse(row!.createdAt)
@@ -160,6 +168,24 @@ export async function POST(req: Request) {
     } catch (e) {
       if (!isDefinitiveStripeMiss(e)) unverifiable = true
       console.error("[stripe/verify-session] lookup by serial", redactError(e))
+    }
+  }
+
+  // Deeper tiers ($497 / $1,997 / $4,997) booked and paid via Calendly are recorded
+  // in Cosmos DB (via the Calendly webhook or thank-you page). If Stripe found nothing,
+  // check Cosmos DB by email for a recorded purchase.
+  if (email && isCosmosConfigured()) {
+    try {
+      const purchase = await readUserPurchaseByEmail(email)
+      if (purchase?.paid_tier) {
+        return NextResponse.json({
+          ok: true,
+          paid: true,
+          tier: purchase.paid_tier,
+        })
+      }
+    } catch (e) {
+      console.error("[stripe/verify-session] lookup by email in cosmos", redactError(e))
     }
   }
 

@@ -14,6 +14,7 @@ import {
   isPaidSessionForSerial,
   pickPaidSession,
   serialBelongsTo,
+  isPaidCosmosUser,
   type CheckoutSessionLike,
 } from "@/lib/server/report-unlock"
 import { decideReportAccess } from "@/lib/client/purchase-proof"
@@ -156,4 +157,29 @@ test("a rate-limited write is retried, a malformed one is not", async () => {
   } finally {
     globalThis.fetch = realFetch
   }
+})
+
+// ── Paywall bypass prevention (Issue #11) ──
+
+test("shell.tsx does not allow client-side bypass via URL tier parameter", async () => {
+  const src = await readFile(new URL("../app/challenge/report/shell.tsx", import.meta.url), "utf8")
+  assert.ok(!src.includes('tier === "session" || tier === "transformation"'), "client tier bypass removed")
+  assert.ok(!src.includes('searchParams.get("tier")'), "tier query parameter no longer read directly for access")
+})
+
+test("a paid tier in Cosmos DB unlocks for the matching email", () => {
+  assert.equal(isPaidCosmosUser({ email: "buyer@example.com", paid_tier: "session" }, "buyer@example.com"), true)
+  assert.equal(isPaidCosmosUser({ email: "buyer@example.com", paid_tier: "transformation" }, "BUYER@EXAMPLE.COM"), true, "case insensitive")
+  assert.equal(isPaidCosmosUser({ email: " buyer@example.com ", paid_tier: "session" }, "buyer@example.com"), true, "whitespace trimmed")
+  assert.equal(isPaidCosmosUser({ email: "buyer@example.com" }, "buyer@example.com"), false, "no paid_tier")
+  assert.equal(isPaidCosmosUser({ email: "buyer@example.com", paid_tier: "" }, "buyer@example.com"), false, "empty paid_tier")
+  assert.equal(isPaidCosmosUser({ email: "buyer@example.com", paid_tier: "session" }, "other@example.com"), false, "email mismatch")
+  assert.equal(isPaidCosmosUser(null, "buyer@example.com"), false, "null row")
+})
+
+test("verify-session route checks Cosmos DB for paid tiers", async () => {
+  const src = await readFile(new URL("../app/api/stripe/verify-session/route.ts", import.meta.url), "utf8")
+  assert.match(src, /readUserIdentity\(serialNumber\)/, "checks serial in Cosmos DB")
+  assert.match(src, /row\.paid_tier/, "unlocks if paid_tier is recorded on user row")
+  assert.match(src, /readUserPurchaseByEmail\(email\)/, "checks email in Cosmos DB fallback")
 })

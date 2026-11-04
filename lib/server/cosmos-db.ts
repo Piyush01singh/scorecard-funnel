@@ -882,17 +882,42 @@ export async function updateUserTelemetry(
  *  the paid-report unlock trusts it (see /api/stripe/verify-session). */
 export async function readUserIdentity(
   serialNumber: number
-): Promise<{ email: string; createdAt: string } | null> {
+): Promise<{ email: string; createdAt: string; paid_tier?: string } | null> {
   await ensureInitialized()
   const { resources } = await usersContainer()
-    .items.query<{ email?: string; createdAt?: string }>({
-      query: "SELECT c.email, c.createdAt FROM c WHERE c.id = @id",
+    .items.query<{ email?: string; createdAt?: string; paid_tier?: string }>({
+      query: "SELECT c.email, c.createdAt, c.paid_tier FROM c WHERE c.id = @id",
       parameters: [{ name: "@id", value: String(serialNumber) }],
     })
     .fetchAll()
   const row = resources[0]
   if (!row?.email) return null
-  return { email: row.email, createdAt: row.createdAt ?? "" }
+  return {
+    email: row.email,
+    createdAt: row.createdAt ?? "",
+    ...(row.paid_tier ? { paid_tier: row.paid_tier } : {}),
+  }
+}
+
+/**
+ * Check Cosmos DB for a completed purchase by email.
+ */
+export async function readUserPurchaseByEmail(
+  email: string
+): Promise<{ paid_tier: string } | null> {
+  await ensureInitialized()
+  const normalized = email.trim().toLowerCase()
+  if (!normalized) return null
+  const { resources } = await usersContainer()
+    .items.query<{ paid_tier?: string }>({
+      query:
+        "SELECT c.paid_tier FROM c WHERE (c.email = @email OR LOWER(c.email) = @email) AND IS_DEFINED(c.paid_tier) AND c.paid_tier != ''",
+      parameters: [{ name: "@email", value: normalized }],
+    })
+    .fetchAll()
+  const row = resources[0]
+  if (!row?.paid_tier) return null
+  return { paid_tier: row.paid_tier }
 }
 
 /** Record a completed purchase against the user document. */

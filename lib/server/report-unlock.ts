@@ -66,3 +66,14 @@ export function isPaidSessionForSerial(
 export function isDefinitiveStripeMiss(e: unknown): boolean {
   return (e as { type?: unknown } | null)?.type === "StripeInvalidRequestError"
 }
+
+/**
+ * True when the Cosmos DB row belongs to the claimed email and records a paid tier.
+ */
+export function isPaidCosmosUser(
+  row: { email: string; paid_tier?: string } | null,
+  claimedEmail: string,
+): boolean {
+  if (!row?.email || !row?.paid_tier) return false
+  return row.email.trim().toLowerCase() === claimedEmail.trim().toLowerCase()
+}

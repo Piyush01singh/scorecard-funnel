@@ -75,16 +75,14 @@ async function verifyPurchase(body: {
  *    remembered purchase) is never shown the paywall. If Stripe cannot be
  *    asked they get the report; if Stripe finds nothing they get a screen
  *    that says so, with a retry and a support contact. See decideReportAccess.
- *  - Calendly ($497 / $1,997 / $4,997): paid inside Calendly's hosted flow, so there's no
- *    Stripe session to verify here. We allow these tiers through (the report
- *    is personalized to the viewer's own assessment). Tightening this to a
- *    true payment check requires a Calendly webhook that records paid status
- *    server-side - tracked separately.
+ *  - Calendly ($497 / $1,997 / $4,997): paid inside Calendly's hosted flow and
+ *    recorded server-side in Cosmos DB via the Calendly webhook / thank-you page.
+ *    Verified SERVER-SIDE via /api/stripe/verify-session checking Cosmos DB.
+ *    URL parameters (?tier=...) never grant client-side access on their own.
  */
 function ReportRouter() {
   const searchParams = useSearchParams()
   const sessionId = searchParams.get("session_id")
-  const tier = searchParams.get("tier")
   const paidParam = searchParams.get("paid") === "1"
   const { state, isHydrated } = useChallenge()
   const [verifyRun, setVerifyRun] = useState(0)
@@ -105,14 +103,8 @@ function ReportRouter() {
 
     let cancelled = false
 
-    // Calendly-booked tiers: no Stripe session to verify (see note above).
-    if (tier === "session" || tier === "transformation") {
-      setAccess("allowed")
-      return
-    }
-
-    // Stripe path. The buyer's email and serial live in the funnel state, so
-    // wait for it to load from localStorage before asking.
+    // Stripe/Cosmos verification path. The buyer's email and serial live in the
+    // funnel state, so wait for it to load from localStorage before asking.
     if (!isHydrated) return
 
     const remembered = recallPurchase()
@@ -155,7 +147,7 @@ function ReportRouter() {
     return () => {
       cancelled = true
     }
-  }, [sessionId, tier, previewMode, paidParam, isHydrated, state.email, state.serialNumber, verifyRun])
+  }, [sessionId, previewMode, paidParam, isHydrated, state.email, state.serialNumber, verifyRun])
 
   const recheck = useCallback(() => setVerifyRun((n) => n + 1), [])
 
