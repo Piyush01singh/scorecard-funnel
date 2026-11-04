@@ -22,3 +22,10 @@ test("the question screen gates Continue on the minimum", async () => {
   assert.match(src, /disabled=\{isNavigating \|\| !answerLongEnough\}/)
   assert.match(src, /if \(!answerLongEnough\) return/)
 })
+
+test("stream-beat clamps question response lengths to 1500 chars to avoid token exhaustion", async () => {
+  const src = await readFile(new URL("../app/api/challenge/stream-beat/route.ts", import.meta.url), "utf8")
+  for (let i = 1; i <= 5; i++) {
+    assert.match(src, new RegExp(`question${i}:\\s*z\\.string\\(\\)\\.max\\(1500\\)`))
+  }
+})
